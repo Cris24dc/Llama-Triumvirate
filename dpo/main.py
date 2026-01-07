@@ -18,30 +18,29 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
-# 1. Configurare LoRA mult mai puternică
 model = FastLanguageModel.get_peft_model(
     model,
-    r=128,              # Mărit de la 16/32 -> Capacitate mai mare de re-învățare
+    r=128,
     target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
-    lora_alpha=256,     # Mărit -> Influență mai mare a adaptorului
-    lora_dropout=0.05,  # Puțin dropout ajută la generalizare
+    lora_alpha=256,
+    lora_dropout=0.05,
     bias="none",
     use_gradient_checkpointing="unsloth",
     random_state=42,
 )
 
-def filter_ambiguous_data(row):
-    return row["is_response_0_safe"] != row["is_response_1_safe"]
-
 def format_safety_data(row):
     prompt = row["prompt"]
     
-    if row["is_response_0_safe"]:
-        chosen = row["response_0"]
-        rejected = row["response_1"]
+    if "chosen" in row and "rejected" in row:
+        chosen = row["chosen"]
+        rejected = row["rejected"]
+    elif "compliance" in row and "refusal" in row:
+        chosen = row["refusal"]
+        rejected = row["compliance"]
     else:
-        chosen = row["response_1"]
-        rejected = row["response_0"]
+        chosen = row["response"] if "response" in row else ""
+        rejected = ""
 
     return {
         "prompt": tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True),
@@ -49,13 +48,10 @@ def format_safety_data(row):
         "rejected": rejected + tokenizer.eos_token,
     }
 
+dataset = load_dataset("LLM-LAT/harmful-dataset", split="train")
 
-# 2. Folosește mai multe date (Măcar 10.000 sau tot setul)
-print("Incarcare dataset PKU-SafeRLHF extins...")
-# Dacă ai memorie RAM, scoate slicing-ul [:10000] și lasă tot.
-raw_dataset = load_dataset("PKU-Alignment/PKU-SafeRLHF-30K", split="train[:26000]")
-
-dataset = raw_dataset.filter(filter_ambiguous_data)
+if "chosen" not in dataset.column_names and "compliance" not in dataset.column_names:
+    raise ValueError("Dataset-ul nu conține coloane standard pentru DPO (chosen/rejected sau compliance/refusal).")
 
 original_columns = dataset.column_names
 dataset = dataset.map(format_safety_data, remove_columns=original_columns)
@@ -64,26 +60,25 @@ dataset_split = dataset.train_test_split(test_size=0.1, seed=42)
 train_dataset = dataset_split["train"]
 eval_dataset = dataset_split["test"]
 
-# 3. Configurare DPO mai agresivă
 dpo_config = DPOConfig(
-    beta=0.1,                    # Rămâne 0.1 pentru a permite divergența
+    beta=0.1,
     max_length=1024,
     max_prompt_length=512,
-    per_device_train_batch_size=2, # Dacă îți permite VRAM-ul
-    gradient_accumulation_steps=8, # Crește pașii pentru un batch efectiv mai mare
-    learning_rate=1e-5,          # Dublat față de 5e-6
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=8,
+    learning_rate=1e-5,
     logging_steps=10,
     output_dir="./dpo_safety_aggressive",
     optim="adamw_8bit",
-    num_train_epochs=2,          # Mărit la 2 epoci. 1 epocă e adesea insuficientă pt safety.
+    num_train_epochs=2,
     fp16=not is_bfloat16_supported(),
     bf16=is_bfloat16_supported(),
-    max_grad_norm=1.0,           # Permite gradienți mai mari (standard e 0.3 sau 1.0)
+    max_grad_norm=1.0,
     warmup_ratio=0.05,
     remove_unused_columns=False,
     run_name="dpo_safety_aggressive",
     report_to="none",
-    save_strategy="epoch",       # Salvează la fiecare epocă
+    save_strategy="epoch",
 )
 
 dpo_trainer = DPOTrainer(
