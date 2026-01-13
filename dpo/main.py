@@ -51,7 +51,7 @@ def format_safety_data(row):
 dataset = load_dataset("LLM-LAT/harmful-dataset", split="train")
 
 if "chosen" not in dataset.column_names and "compliance" not in dataset.column_names:
-    raise ValueError("Dataset-ul nu conține coloane standard pentru DPO (chosen/rejected sau compliance/refusal).")
+    raise ValueError("Dataset doesn't contain appropriate columns for DPO.")
 
 original_columns = dataset.column_names
 dataset = dataset.map(format_safety_data, remove_columns=original_columns)
@@ -92,5 +92,4 @@ dpo_trainer = DPOTrainer(
 
 dpo_trainer.train()
 
-model.save_pretrained("./final_safe_llama")
-tokenizer.save_pretrained("./final_safe_llama")
+model.save_pretrained("./final_model")
